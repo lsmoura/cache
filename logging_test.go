@@ -136,7 +136,6 @@ func TestLogging(t *testing.T) {
 		_, err = cache.Do(req.WithContext(WithOnlyCached(req.Context(), true)))
 		assert.Contains(t, logger.String(), "cache=ignored_check")
 
-		fmt.Println(logger.String())
 		logger.Reset()
 	})
 }

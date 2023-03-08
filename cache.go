@@ -61,7 +61,7 @@ func (r Cache) read(ctx context.Context, key string) (*cacheEntry, error) {
 
 	var entry cacheEntry
 	if err := json.Unmarshal(value, &entry); err != nil {
-		fmt.Println("error unmarshalling cache entry:", err)
+		r.logger(ctx).Error("error unmarshalling cache entry", "error", err)
 		return nil, nil
 	}
 
