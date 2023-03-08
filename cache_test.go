@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"errors"
+	"github.com/stretchr/testify/require"
 	"io"
 	"net/http"
 	"testing"
@@ -37,6 +38,8 @@ func TestCache_Do(t *testing.T) {
 	const expiredURL = "http://example.com/alwaysExpired"
 	const nonExistingURL = "http://example.com/nonExisting"
 
+	ctx := context.Background()
+
 	requester := fakeRequester{
 		data: map[string]*cacheEntry{
 			regularURL: {
@@ -57,104 +60,78 @@ func TestCache_Do(t *testing.T) {
 			},
 		},
 	}
-	provider := memoryprovider.New()
-
-	cache := New(provider)
+	cache := New(memoryprovider.New())
 	cache.HttpClient = &requester
 
-	req, err := http.NewRequest("GET", "http://example.com/", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	t.Run("regular request", func(t *testing.T) {
+		req, err := http.NewRequest("GET", regularURL, nil)
+		require.NoError(t, err, "http.NewRequest")
 
-	res, err := cache.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func(Body io.ReadCloser) {
-		_ = Body.Close()
-	}(res.Body)
+		res, err := cache.Do(req)
+		require.NoError(t, err, "cache.Do")
 
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
+		defer func(Body io.ReadCloser) {
+			_ = Body.Close()
+		}(res.Body)
 
-	if string(body) != "Hello World" {
-		t.Fatal("Expected body to be Hello World")
-	}
+		body, err := io.ReadAll(res.Body)
+		require.NoError(t, err, "io.ReadAll")
 
-	// same request should hit cache
-	req, err = http.NewRequest("GET", "http://example.com/", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+		require.Equal(t, "Hello World", string(body), "Expected body to be Hello World")
+	})
 
-	res, err = cache.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	t.Run("cached request", func(t *testing.T) {
+		initialCount := requester.requestCount
+		// same request should hit cache
+		req, err := http.NewRequest("GET", regularURL, nil)
+		require.NoError(t, err, "http.NewRequest()")
 
-	if requester.requestCount != 1 {
-		t.Fatal("Expected request count to be 1")
-	}
+		_, err = cache.Do(req)
+		require.NoError(t, err, "cache.Do()")
 
-	// set ignore cache and expect request count to increase
-	req, err = http.NewRequestWithContext(WithIgnoreCache(context.Background(), true), "GET", "http://example.com/", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+		require.Equalf(t, initialCount, requester.requestCount, "Expected request count to be %d", initialCount)
+	})
 
-	res, err = cache.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	t.Run("ignoring cache should increase request count", func(t *testing.T) {
+		initialCount := requester.requestCount
 
-	if requester.requestCount != 2 {
-		t.Fatalf("Expected request count to be 2, got %d", requester.requestCount)
-	}
+		// set ignore cache and expect request count to increase
+		req, err := http.NewRequestWithContext(WithIgnoreCache(ctx, true), "GET", regularURL, nil)
+		require.NoError(t, err, "http.NewRequestWithContext")
 
-	// if requesting an expired URL with the ignore expired flag, the request count shouldn't increase, unless cache has not cached the entry yet
-	countBefore := requester.requestCount
-	req, err = http.NewRequestWithContext(WithIgnoreExpired(context.Background(), true), "GET", expiredURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+		_, err = cache.Do(req)
+		require.NoError(t, err, "cache.Do")
 
-	res, err = cache.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
+		require.Equalf(t, initialCount+1, requester.requestCount, "Expected request count to be %d", initialCount+1)
+	})
 
-	if requester.requestCount != countBefore+1 {
-		t.Fatalf("Expected request count to be %d, got %d", countBefore, requester.requestCount)
-	}
+	t.Run("ignore expired", func(t *testing.T) {
+		initialCount := requester.requestCount
+		reqCtx := WithIgnoreExpired(ctx, true)
 
-	// do it again, this time it should be cached
-	req, err = http.NewRequestWithContext(WithIgnoreExpired(context.Background(), true), "GET", expiredURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+		req, err := http.NewRequestWithContext(ctx, "GET", expiredURL, nil)
+		require.NoError(t, err, "http.NewRequestWithContext")
 
-	res, err = cache.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
+		// request counter should increase, because it's not cached yet
+		_, err = cache.Do(req.Clone(reqCtx))
+		require.NoError(t, err, "cache.Do")
+		require.Equalf(t, initialCount+1, requester.requestCount, "Expected request count to increase and be %d", initialCount+1)
 
-	if requester.requestCount != countBefore+1 {
-		t.Fatalf("Expected request count to be %d, got %d", countBefore, requester.requestCount)
-	}
+		// now, even though the entry is expired, it should be returned from cache
+		_, err = cache.Do(req.Clone(reqCtx))
+		require.NoError(t, err, "cache.Do")
+		require.Equal(t, initialCount+1, requester.requestCount, "Expected request count not to increase and be %d", initialCount+1)
+	})
 
-	// if we request the cache to never make the request and the entry does not exists, should return an error
-	req, err = http.NewRequestWithContext(WithOnlyCached(context.Background(), true), "GET", nonExistingURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	t.Run("only cached", func(t *testing.T) {
+		// if we request the cache to never make the request and the entry does not exist, should return an error
+		req, err := http.NewRequestWithContext(WithOnlyCached(ctx, true), "GET", nonExistingURL, nil)
+		require.NoError(t, err, "http.NewRequestWithContext")
 
-	_, err = cache.Do(req)
-	if !errors.Is(err, ErrCacheMiss) {
-		t.Fatalf("Expected error to be ErrCacheMiss, got %v", err)
-	}
+		if _, err := cache.Do(req); !errors.Is(err, ErrCacheMiss) {
+			t.Fatalf("Expected error to be ErrCacheMiss, got %v", err)
+		}
+	})
 }
 
 func TestCache_Etag(t *testing.T) {
@@ -175,40 +152,25 @@ func TestCache_Etag(t *testing.T) {
 		},
 	}
 
-	provider := memoryprovider.New()
-
-	cache := New(provider)
+	cache := New(memoryprovider.New())
 	cache.HttpClient = &requester
 
 	req, err := http.NewRequest("GET", cacheURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := cache.Do(req); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err, "http.NewRequest")
+	_, err = cache.Do(req)
+	require.NoError(t, err, "cache.Do")
 
 	req, err = http.NewRequest("GET", cacheURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err, "http.NewRequest")
+	_, err = cache.Do(req)
+	require.NoError(t, err, "cache.Do")
 
-	if _, err := cache.Do(req); err != nil {
-		t.Fatal(err)
-	}
-
-	if len(requester.requestLog) != 2 {
-		t.Fatalf("Expected request log to have 2 entries, got %d", len(requester.requestLog))
-	}
+	require.Equal(t, 2, len(requester.requestLog))
 
 	lastReq := requester.requestLog[len(requester.requestLog)-1]
 	ifNoneMatchHeader, ok := lastReq.Header["If-None-Match"]
-	if !ok {
-		t.Fatal("Expected If-None-Match header to be set")
-	}
-	if ifNoneMatchHeader[0] != etag {
-		t.Fatalf("Expected If-None-Match header to be %s, got %s", etag, ifNoneMatchHeader[0])
-	}
+	require.False(t, !ok, "Expected If-None-Match header to be set")
+	require.Equalf(t, ifNoneMatchHeader[0], etag, "Expected If-None-Match header to match etag value")
 }
 
 func TestCache_Keygen(t *testing.T) {
@@ -245,21 +207,17 @@ func TestCache_Keygen(t *testing.T) {
 		return "foo"
 	}
 
-	if req, err := http.NewRequest("GET", cacheURL1, nil); err != nil {
-		t.Fatal(err)
-	} else if _, err := cache.Do(req); err != nil {
-		t.Fatal(err)
-	}
+	req, err := http.NewRequest(http.MethodGet, cacheURL1, nil)
+	require.NoError(t, err, "http.NewRequest")
+	_, err = cache.Do(req)
+	require.NoError(t, err, "cache.Do")
 
-	if req, err := http.NewRequest("GET", cacheURL2, nil); err != nil {
-		t.Fatal(err)
-	} else if _, err := cache.Do(req); err != nil {
-		t.Fatal(err)
-	}
+	req, err = http.NewRequest(http.MethodGet, cacheURL2, nil)
+	require.NoError(t, err, "http.NewRequest")
+	_, err = cache.Do(req)
+	require.NoError(t, err, "cache.Do")
 
-	if len(requester.requestLog) != 1 {
-		t.Fatalf("Expected request log to have 1 entry, got %d", len(requester.requestLog))
-	}
+	require.Equal(t, 1, len(requester.requestLog), "Request count mismatch")
 }
 
 func TestCache_Etag304(t *testing.T) {
@@ -285,47 +243,29 @@ func TestCache_Etag304(t *testing.T) {
 	cache := New(provider)
 	cache.HttpClient = &requester
 
-	req, err := http.NewRequest("GET", cacheURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := cache.Do(req); err != nil {
-		t.Fatal(err)
-	}
+	req, err := http.NewRequest(http.MethodGet, cacheURL, nil)
+	require.NoError(t, err, "http.NewRequest")
+	_, err = cache.Do(req)
+	require.NoError(t, err, "cache.Do")
 
 	requester.data[cacheURL].StatusCode = http.StatusNotModified
 	requester.data[cacheURL].Data = []byte("")
 
-	req, err = http.NewRequest("GET", cacheURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	req, err = http.NewRequest(http.MethodGet, cacheURL, nil)
+	require.NoError(t, err, "http.NewRequest")
 
 	resp, err := cache.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err, "cache.Do")
 
-	if len(requester.requestLog) != 2 {
-		t.Fatalf("Expected request log to have 2 entries, got %d", len(requester.requestLog))
-	}
+	require.Equalf(t, len(requester.requestLog), 2, "Expected request log to have 2 entries, got %d", len(requester.requestLog))
 
 	lastReq := requester.requestLog[len(requester.requestLog)-1]
 	ifNoneMatchHeader, ok := lastReq.Header["If-None-Match"]
-	if !ok {
-		t.Fatal("Expected If-None-Match header to be set")
-	}
-	if ifNoneMatchHeader[0] != etag {
-		t.Fatalf("Expected If-None-Match header to be %s, got %s", etag, ifNoneMatchHeader[0])
-	}
-	if resp.StatusCode != http.StatusNotModified {
-		t.Fatalf("Expected status code to be %d, got %d", http.StatusNotModified, resp.StatusCode)
-	}
+	require.True(t, ok, "Expected If-None-Match header to be set")
+	require.Equalf(t, ifNoneMatchHeader[0], etag, "Expected If-None-Match header to be %s, got %s", etag, ifNoneMatchHeader[0])
+	require.Equalf(t, resp.StatusCode, http.StatusNotModified, "Expected status code to be %d, got %d", http.StatusNotModified, resp.StatusCode)
+
 	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(body) != "Hello World" {
-		t.Fatalf("Expected body to be '\"Hello World\", got %s", body)
-	}
+	require.NoError(t, err, "io.ReadAll")
+	require.Equal(t, "Hello World", string(body))
 }
