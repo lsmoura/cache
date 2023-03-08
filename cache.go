@@ -7,11 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"time"
-
-	"github.com/rs/zerolog/log"
 )
 
 type HttpRequester interface {
@@ -24,6 +21,8 @@ type Cache struct {
 	HttpClient   HttpRequester // custom http client provider, or nil for http.DefaultClient
 	KeyGenerator KeyGenerator  // custom key generator, or nil for default
 	provider     Provider
+
+	LogExtractor LoggerExtractor
 }
 
 type cacheStat string
@@ -91,7 +90,9 @@ func (r Cache) write(ctx context.Context, key string, entry *cacheEntry) error {
 
 func (r Cache) store(ctx context.Context, key string, resp *http.Response) (*cacheEntry, error) {
 	defer func(Body io.ReadCloser) {
-		_ = Body.Close()
+		if err := Body.Close(); err != nil {
+			r.logInfo(ctx, "error closing response body", "error", err)
+		}
 	}(resp.Body)
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -124,20 +125,21 @@ func (r Cache) key(req *http.Request) string {
 
 func (r Cache) Do(req *http.Request) (*http.Response, error) {
 	ctx := req.Context()
-	event := log.Ctx(ctx).Debug().Str("url", req.URL.String())
+	event := r.logger(ctx)
+	event = event.With("url", req.URL.String())
 	var stat cacheStat
 	defer func() {
 		if stat != "" {
-			event.Str("cache", string(stat))
+			event = event.With("cache", stat)
 		}
-		event.Msg("cache.Do")
+		event.Info("cache.Do")
 	}()
 	if req.Method != http.MethodGet {
 		return r.httpClient().Do(req)
 	}
 
 	key := r.key(req)
-	event.Str("cache-key", key)
+	event = event.With("cache-key", key)
 
 	var entry *cacheEntry
 
@@ -153,7 +155,7 @@ func (r Cache) Do(req *http.Request) (*http.Response, error) {
 				stat = cacheStatIgnoredExpiry
 				return entry.asHttpResponse(req), nil
 			} else {
-				event.Err(err)
+				event.Error("error", "err", err)
 				return nil, err
 			}
 		} else if entry != nil {
@@ -183,18 +185,18 @@ func (r Cache) Do(req *http.Request) (*http.Response, error) {
 	start := time.Now()
 	resp, err := r.httpClient().Do(req)
 	if err != nil {
-		event.Err(err)
+		event.Error("error", "err", err)
 		return nil, fmt.Errorf("http.Do(): %w", err)
 	}
-	event.TimeDiff("elapsed", time.Now(), start)
-	event.Int("status", resp.StatusCode)
+	event = event.With("elapsed", time.Since(start))
+	event = event.With("status", resp.StatusCode)
 
 	if resp.StatusCode == http.StatusNotModified {
 		// update expires and last-modified
 		if entry == nil {
 			// we don't have any data to use as "not modified"
 			err := errors.New("no cached entry to return")
-			event.Err(err)
+			event.Error("error", "err", err)
 			return nil, err
 		}
 		if expires, ok := entry.Headers["Expires"]; ok {
@@ -204,17 +206,17 @@ func (r Cache) Do(req *http.Request) (*http.Response, error) {
 			resp.Header.Set("Last-Modified", lastModified)
 		}
 		if err := r.write(ctx, key, entry); err != nil {
-			event.Err(err)
+			event.Error("error", "err", err)
 		}
 
-		resp.Body = ioutil.NopCloser(bytes.NewReader(entry.Data))
+		resp.Body = io.NopCloser(bytes.NewReader(entry.Data))
 
 		return resp, nil
 	}
 
 	e, err := r.store(ctx, key, resp)
 	if err != nil {
-		event.Err(err)
+		event.Error("error", "err", err)
 		return nil, fmt.Errorf("r.store(): %w", err)
 	}
 
