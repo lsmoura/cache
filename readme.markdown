@@ -63,6 +63,24 @@ By modifying the context, the behaviour of the cache can be modified.
 * **WithIgnoreCache** - ignores any return values from the cache. Http responses are still cached.
 * **WithOnlyCached** - returns only a cached value, if it exists. Returns an `ErrCacheMiss` error if the value is not cached.
 
+
+### Logging
+
+The cache can make use of any struct that implements the `Logger` interface. 
+
+```go
+type Logger interface {
+	Debug(msg string, params ...any)
+	Info(msg string, params ...any)
+	Error(msg string, params ...any)
+}
+```
+
+The cache will try to extract the logger from the context using the `LogExtractor` parameter.
+If no logger is found, nothing will be logged.
+
+The logger for `golang.org/x/exp/slog` package can be used as a drop-in for the interface.
+
 # Author
 
 * [Sergio Moura](https://sergio.moura.ca/)

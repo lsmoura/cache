@@ -74,12 +74,6 @@ func (l *fakeLogger) Info(msg string, params ...any) {
 func (l *fakeLogger) Error(msg string, params ...any) {
 	l.log(logLevelError, msg, params...)
 }
-func (l *fakeLogger) With(params ...any) Logger {
-	return &fakeLogger{
-		buf:    l.buf,
-		params: append(l.params, params...),
-	}
-}
 
 func TestLogging(t *testing.T) {
 	const regularURL = "http://example.com/"
@@ -138,4 +132,21 @@ func TestLogging(t *testing.T) {
 
 		logger.Reset()
 	})
+}
+
+func TestInternalLogger(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := &internalLogger{logger: &fakeLogger{buf: &buf}}
+
+	event := logger.With("key", "value")
+	event.Info("hello world", "key2", "value2")
+
+	assert.Equal(t, buf.String(), "INFO hello world key=value key2=value2\n")
+
+	buf.Reset()
+	// original key values are persisted
+	event.Info("hello world2")
+	assert.Equal(t, buf.String(), "INFO hello world2 key=value\n")
 }

@@ -6,8 +6,6 @@ type Logger interface {
 	Debug(msg string, params ...any)
 	Info(msg string, params ...any)
 	Error(msg string, params ...any)
-
-	With(keyvalues ...any) Logger
 }
 
 type LoggerExtractor func(ctx context.Context) Logger
@@ -31,6 +29,31 @@ func (leve logLevel) String() string {
 	}
 
 	return ""
+}
+
+type internalLogger struct {
+	logger Logger
+
+	keyvals []any
+}
+
+func (l *internalLogger) Debug(msg string, keyvals ...any) {
+	l.logger.Debug(msg, append(l.keyvals, keyvals...)...)
+}
+
+func (l *internalLogger) Info(msg string, keyvals ...any) {
+	l.logger.Info(msg, append(l.keyvals, keyvals...)...)
+}
+
+func (l *internalLogger) Error(msg string, keyvals ...any) {
+	l.logger.Error(msg, append(l.keyvals, keyvals...)...)
+}
+
+func (l *internalLogger) With(keyvals ...any) *internalLogger {
+	return &internalLogger{
+		logger:  l.logger,
+		keyvals: append(l.keyvals, keyvals...),
+	}
 }
 
 type nilLoggerStruct struct{}
