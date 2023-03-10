@@ -125,7 +125,8 @@ func (r Cache) key(req *http.Request) string {
 
 func (r Cache) Do(req *http.Request) (*http.Response, error) {
 	ctx := req.Context()
-	event := r.logger(ctx)
+
+	event := &internalLogger{logger: r.logger(ctx)}
 	event = event.With("url", req.URL.String())
 	var stat cacheStat
 	defer func() {
